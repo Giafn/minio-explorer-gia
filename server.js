@@ -162,6 +162,19 @@ app.get('/api/tree', async (req, res) => {
   }
 });
 
+// API: delete file from MinIO
+app.delete('/api/delete', async (req, res) => {
+  const filePath = req.query.path;
+  if (!filePath) return res.status(400).json({ error: 'Path required' });
+  try {
+    await minioClient.removeObject(BUCKET, filePath);
+    fileCache = null;
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // API: download file from MinIO
 app.get('/api/download', async (req, res) => {
   const filePath = req.query.path;
