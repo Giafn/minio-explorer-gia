@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MinIO File Explorer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; height: 100vh; display: flex; flex-direction: column; }
+
+        .header { background: #1a1a2e; color: white; padding: 12px 20px; display: flex; align-items: center; gap: 15px; }
+        .header h1 { font-size: 16px; font-weight: 500; }
+        .search-box { flex: 1; max-width: 400px; padding: 8px 12px; border: none; border-radius: 6px; font-size: 14px; }
+        .header-info { font-size: 12px; color: #aaa; margin-left: auto; }
+
+        .main { flex: 1; display: flex; overflow: hidden; }
+
+        .sidebar { width: 260px; background: #fff; border-right: 1px solid #e0e0e0; overflow-y: auto; padding: 10px 0; }
+        .sidebar-title { padding: 8px 16px; font-size: 11px; text-transform: uppercase; color: #888; font-weight: 600; letter-spacing: 0.5px; }
+        .tree-item { padding: 6px 16px 6px 0; cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 13px; color: #333; user-select: none; }
+        .tree-item:hover { background: #f0f5ff; }
+        .tree-item.active { background: #e6f0ff; color: #1a73e8; font-weight: 500; }
+        .tree-arrow { width: 16px; text-align: center; font-size: 10px; color: #888; transition: transform 0.15s; flex-shrink: 0; }
+        .tree-arrow.open { transform: rotate(90deg); }
+        .tree-icon { font-size: 14px; flex-shrink: 0; }
+        .tree-children { display: none; }
+        .tree-children.open { display: block; }
+
+        .content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+        .breadcrumb { padding: 10px 20px; background: #fff; border-bottom: 1px solid #e0e0e0; display: flex; align-items: center; gap: 4px; font-size: 13px; flex-wrap: wrap; }
+        .breadcrumb-item { color: #1a73e8; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+        .breadcrumb-item:hover { background: #e8f0fe; }
+        .breadcrumb-item.current { color: #333; cursor: default; font-weight: 500; }
+        .breadcrumb-item.current:hover { background: none; }
+        .breadcrumb-sep { color: #aaa; }
+
+        .file-list { flex: 1; overflow-y: auto; padding: 10px 20px; }
+        .file-table { width: 100%; border-collapse: collapse; }
+        .file-table th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase; color: #888; font-weight: 600; border-bottom: 2px solid #e0e0e0; position: sticky; top: 0; background: #f0f2f5; }
+        .file-table td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+        .file-table tr:hover { background: #f8f9fa; }
+        .file-table tr.directory { cursor: pointer; }
+        .file-table tr.directory:hover { background: #e8f0fe; }
+        .file-name-cell { display: flex; align-items: center; gap: 8px; }
+        .file-icon { font-size: 18px; width: 24px; text-align: center; }
+        .file-name { color: #333; word-break: break-all; }
+        .dir-name { color: #1a73e8; font-weight: 500; }
+        .actions-cell { white-space: nowrap; }
+        .btn-sm { padding: 4px 10px; font-size: 11px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; background: #fff; }
+        .btn-sm:hover { background: #f0f0f0; }
+        .btn-sm.primary { background: #1a73e8; color: white; border-color: #1a73e8; }
+        .btn-sm.primary:hover { background: #1557b0; }
+
+        .empty { text-align: center; padding: 60px 20px; color: #aaa; }
+        .empty-icon { font-size: 48px; margin-bottom: 10px; }
+        .loading { text-align: center; padding: 40px; color: #888; }
+
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+        .modal-overlay.show { display: flex; }
+        .modal { background: white; border-radius: 12px; width: 80%; max-width: 900px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }
+        .modal-header { padding: 16px 20px; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center; }
+        .modal-header h3 { font-size: 15px; font-weight: 500; }
+        .modal-close { background: none; border: none; font-size: 20px; cursor: pointer; color: #666; padding: 4px; }
+        .modal-close:hover { color: #333; }
+        .modal-body { flex: 1; overflow: auto; padding: 20px; }
+        .modal-body iframe { width: 100%; height: 70vh; border: none; }
+        .modal-body img { max-width: 100%; max-height: 70vh; display: block; margin: 0 auto; }
+        .preview-info { margin-bottom: 15px; padding: 12px; background: #f8f9fa; border-radius: 8px; font-size: 13px; }
+        .preview-info dt { color: #888; font-size: 11px; text-transform: uppercase; }
+        .preview-info dd { margin: 0 0 8px 0; color: #333; }
+
+        .status-bar { padding: 6px 20px; background: #fff; border-top: 1px solid #e0e0e0; font-size: 11px; color: #888; display: flex; gap: 20px; }
+
+        .view-toggle { display: flex; gap: 2px; background: #2a2a3e; border-radius: 6px; padding: 2px; margin-left: 12px; }
+        .view-toggle button { padding: 5px 10px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; background: transparent; color: #aaa; transition: all 0.15s; }
+        .view-toggle button.active { background: #1a73e8; color: white; }
+        .view-toggle button:hover:not(.active) { color: #fff; }
+
+        .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; padding: 10px 0; }
+        .gallery-item { background: #fff; border-radius: 10px; overflow: hidden; cursor: pointer; transition: box-shadow 0.2s, transform 0.15s; border: 1px solid #eee; }
+        .gallery-item:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.1); transform: translateY(-2px); }
+        .gallery-thumb { width: 100%; height: 140px; display: flex; align-items: center; justify-content: center; background: #f5f5f5; overflow: hidden; }
+        .gallery-thumb img { width: 100%; height: 100%; object-fit: cover; }
+        .gallery-thumb .file-icon-large { font-size: 48px; }
+        .gallery-info { padding: 10px 12px; }
+        .gallery-name { font-size: 12px; color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .gallery-meta { font-size: 10px; color: #999; margin-top: 3px; }
+        .gallery-actions { padding: 0 12px 10px; display: flex; gap: 6px; }
+
+        .file-list.gallery-view { padding: 10px 20px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <span style="font-size:20px">📁</span>
+        <h1>MinIO File Explorer</h1>
+        <input type="text" class="search-box" id="searchInput" placeholder="Search files...">
+        <div class="view-toggle">
+            <button id="btnList" class="active" onclick="setView('list')" title="List view">☰</button>
+            <button id="btnGallery" onclick="setView('gallery')" title="Gallery view">⊞</button>
+        </div>
+        <button class="btn-sm" onclick="refreshData()" title="Refresh data" style="margin-left:8px;padding:5px 10px">↻</button>
+        <span class="header-info" id="headerInfo"></span>
+    </div>
+
+    <div class="main">
+        <div class="sidebar">
+            <div class="sidebar-title">Folders</div>
+            <div id="sidebarTree"></div>
+        </div>
+        <div class="content">
+            <div class="breadcrumb" id="breadcrumb"></div>
+            <div class="file-list" id="fileList">
+                <div class="loading">Loading...</div>
+            </div>
+            <div class="status-bar" id="statusBar"></div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="previewModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="previewTitle"></h3>
+                <button class="modal-close" onclick="closePreview()">&times;</button>
+            </div>
+            <div class="modal-body" id="previewBody"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentPath = '/';
+        let currentData = null;
+        let treeData = null;
+        let currentView = 'list';
+        const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'];
+        const iconMap = { pdf: '📕', jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', doc: '📄', docx: '📄', xls: '📊', xlsx: '📊', csv: '📊', txt: '📝', zip: '📦', rar: '📦', mp4: '🎬', mp3: '🎵' };
+
+        function setView(mode) {
+            currentView = mode;
+            document.getElementById('btnList').classList.toggle('active', mode === 'list');
+            document.getElementById('btnGallery').classList.toggle('active', mode === 'gallery');
+            if (currentData) renderFiles(currentData);
+        }
+
+        async function refreshData() {
+            try {
+                await fetch('/api/refresh');
+                treeData = null;
+                await loadTree();
+                await navigateTo(currentPath);
+            } catch (e) { console.error(e); }
+        }
+
+        async function loadTree() {
+            try {
+                const res = await fetch('/api/tree');
+                treeData = await res.json();
+                renderSidebar();
+            } catch (e) { console.error(e); }
+        }
+
+        function renderSidebar() {
+            const container = document.getElementById('sidebarTree');
+            container.innerHTML = renderTreeNode(treeData, '/');
+        }
+
+        function renderTreeNode(node, parentPath) {
+            const dirs = Object.values(node.children);
+            if (dirs.length === 0) return '';
+            let html = '';
+            dirs.forEach(dir => {
+                const fullPath = parentPath === '/' ? '/' + dir.name : parentPath + '/' + dir.name;
+                const hasChildren = Object.keys(dir.children).length > 0;
+                const isActive = currentPath === fullPath;
+                html += `<div class="tree-item${isActive ? ' active' : ''}" onclick="navigateTo('${fullPath}')" data-path="${fullPath}">
+                    <span class="tree-arrow${hasChildren ? '' : ''}">▶</span>
+                    <span class="tree-icon">📁</span>
+                    <span>${dir.name}</span>
+                </div>`;
+                if (hasChildren) {
+                    html += `<div class="tree-children" style="padding-left:20px">${renderTreeNode(dir, fullPath)}</div>`;
+                }
+            });
+            return html;
+        }
+
+        async function navigateTo(dirPath) {
+            currentPath = dirPath;
+            await loadDirectory(dirPath);
+            updateBreadcrumb(dirPath);
+            updateSidebarActive(dirPath);
+        }
+
+        function updateSidebarActive(dirPath) {
+            document.querySelectorAll('.tree-item').forEach(el => {
+                el.classList.toggle('active', el.dataset.path === dirPath);
+            });
+        }
+
+        function updateBreadcrumb(dirPath) {
+            const parts = dirPath.split('/').filter(Boolean);
+            let html = `<span class="breadcrumb-item${parts.length === 0 ? ' current' : ''}" onclick="navigateTo('/')">🏠 Root</span>`;
+            let buildPath = '';
+            parts.forEach((part, i) => {
+                buildPath += '/' + part;
+                const isCurrent = i === parts.length - 1;
+                html += `<span class="breadcrumb-sep">/</span>`;
+                html += `<span class="breadcrumb-item${isCurrent ? ' current' : ''}" onclick="${isCurrent ? '' : `navigateTo('${buildPath}')`}">${part}</span>`;
+            });
+            document.getElementById('breadcrumb').innerHTML = html;
+        }
+
+        async function loadDirectory(dirPath) {
+            const container = document.getElementById('fileList');
+            container.innerHTML = '<div class="loading">Loading...</div>';
+            try {
+                const res = await fetch('/api/list?path=' + encodeURIComponent(dirPath));
+                currentData = await res.json();
+                renderFiles(currentData);
+                updateStatus(currentData);
+            } catch (e) {
+                container.innerHTML = '<div class="empty"><div class="empty-icon">❌</div>Error loading directory</div>';
+            }
+        }
+
+        function renderFiles(data) {
+            const container = document.getElementById('fileList');
+            const dirs = data.directories || [];
+            const files = data.files || [];
+
+            if (dirs.length === 0 && files.length === 0) {
+                container.innerHTML = '<div class="empty"><div class="empty-icon">📂</div>This folder is empty</div>';
+                return;
+            }
+
+            if (currentView === 'gallery') {
+                renderGallery(container, dirs, files, data.path);
+            } else {
+                renderList(container, dirs, files, data.path);
+            }
+        }
+
+        function renderList(container, dirs, files, basePath) {
+            let html = '<table class="file-table"><thead><tr><th>Name</th><th>Type</th><th>Owner</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
+
+            dirs.forEach(dir => {
+                const fullPath = basePath === '/' ? '/' + dir.name : basePath + '/' + dir.name;
+                html += `<tr class="directory" onclick="navigateTo('${fullPath}')">
+                    <td><div class="file-name-cell"><span class="file-icon">📁</span><span class="dir-name">${dir.name}</span></div></td>
+                    <td>Folder</td><td>-</td><td></td>
+                </tr>`;
+            });
+
+            files.forEach(file => {
+                const ext = file.name.split('.').pop().toLowerCase();
+                const icon = iconMap[ext] || '📄';
+                html += `<tr>
+                    <td><div class="file-name-cell"><span class="file-icon">${icon}</span><span class="file-name">${file.name}</span></div></td>
+                    <td>${file.docType || ext.toUpperCase()}</td>
+                    <td>${file.createdBy || '-'}</td>
+                    <td>${file.createdDate || '-'}</td>
+                    <td class="actions-cell">
+                        <button class="btn-sm" onclick="event.stopPropagation();previewFile('${file.path.replace(/'/g, "\\'")}')">Preview</button>
+                        <button class="btn-sm primary" onclick="event.stopPropagation();downloadFile('${file.path.replace(/'/g, "\\'")}')">Download</button>
+                    </td>
+                </tr>`;
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+            container.classList.remove('gallery-view');
+        }
+
+        function renderGallery(container, dirs, files, basePath) {
+            let html = '<div class="gallery-grid">';
+
+            dirs.forEach(dir => {
+                const fullPath = basePath === '/' ? '/' + dir.name : basePath + '/' + dir.name;
+                html += `<div class="gallery-item" onclick="navigateTo('${fullPath}')">
+                    <div class="gallery-thumb"><span class="file-icon-large">📁</span></div>
+                    <div class="gallery-info">
+                        <div class="gallery-name" title="${dir.name}">${dir.name}</div>
+                        <div class="gallery-meta">Folder</div>
+                    </div>
+                </div>`;
+            });
+
+            files.forEach(file => {
+                const ext = file.name.split('.').pop().toLowerCase();
+                const isImage = imageExts.includes(ext);
+                const icon = iconMap[ext] || '📄';
+                const safePath = file.path.replace(/'/g, "\\'");
+                const thumbnail = isImage
+                    ? `<img src="/api/preview?path=${encodeURIComponent(file.path)}" alt="${file.name}" loading="lazy" onerror="this.parentElement.innerHTML='<span class=\\'file-icon-large\\'>${icon}</span>'">`
+                    : `<span class="file-icon-large">${icon}</span>`;
+
+                html += `<div class="gallery-item">
+                    <div class="gallery-thumb" onclick="previewFile('${safePath}')">${thumbnail}</div>
+                    <div class="gallery-info">
+                        <div class="gallery-name" title="${file.name}">${file.name}</div>
+                        <div class="gallery-meta">${file.docType || ext.toUpperCase()}${file.createdBy ? ' · ' + file.createdBy : ''}${file.createdDate ? ' · ' + file.createdDate : ''}</div>
+                    </div>
+                    <div class="gallery-actions">
+                        <button class="btn-sm" onclick="event.stopPropagation();previewFile('${safePath}')">Preview</button>
+                        <button class="btn-sm primary" onclick="event.stopPropagation();downloadFile('${safePath}')">Download</button>
+                    </div>
+                </div>`;
+            });
+
+            html += '</div>';
+            container.innerHTML = html;
+            container.classList.add('gallery-view');
+        }
+
+        function updateStatus(data) {
+            const total = (data.directories || []).length + (data.files || []).length;
+            document.getElementById('statusBar').innerHTML =
+                `<span>${(data.directories || []).length} folders</span><span>${(data.files || []).length} files</span>`;
+            document.getElementById('headerInfo').textContent = currentPath;
+        }
+
+        function previewFile(filePath) {
+            const ext = filePath.split('.').pop().toLowerCase();
+            const modal = document.getElementById('previewModal');
+            document.getElementById('previewTitle').textContent = filePath.split('/').pop();
+            const body = document.getElementById('previewBody');
+
+            if (imageExts.includes(ext)) {
+                body.innerHTML = `<img src="/api/preview?path=${encodeURIComponent(filePath)}" alt="Preview">`;
+            } else if (ext === 'pdf') {
+                body.innerHTML = `<iframe src="/api/preview?path=${encodeURIComponent(filePath)}"></iframe>`;
+            } else {
+                body.innerHTML = `<div class="empty"><div class="empty-icon">📄</div><p>Preview not available for .${ext} files</p><p>Use Download instead</p></div>`;
+            }
+            modal.classList.add('show');
+        }
+
+        function closePreview() {
+            document.getElementById('previewModal').classList.remove('show');
+            document.getElementById('previewBody').innerHTML = '';
+        }
+
+        function downloadFile(filePath) {
+            window.open('/api/download?path=' + encodeURIComponent(filePath), '_blank');
+        }
+
+        document.getElementById('searchInput').addEventListener('keyup', async (e) => {
+            if (e.key === 'Enter') {
+                const query = e.target.value.toLowerCase();
+                if (!query) { navigateTo(currentPath); return; }
+                try {
+                    const res = await fetch('/api/list?path=/');
+                    const data = await res.json();
+                    const allFiles = data.files || [];
+                    const matched = allFiles.filter(f => f.name.toLowerCase().includes(query) || f.path.toLowerCase().includes(query));
+                    document.getElementById('fileList').innerHTML = '';
+                    const searchData = { path: 'Search: ' + query, directories: [], files: matched };
+                    renderFiles(searchData);
+                    updateStatus(searchData);
+                } catch (e) {}
+            }
+        });
+
+        document.getElementById('previewModal').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closePreview();
+        });
+
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePreview(); });
+
+        loadTree();
+        navigateTo('/');
+    </script>
+</body>
+</html>

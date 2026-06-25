@@ -1,0 +1,21 @@
+{
+  "type": "project",
+  "name": "minio-file-explorer",
+  "version": "1.0.0",
+  "description": "MinIO file explorer using DOCUMENT_FILES.EVIDENCE_PATH from database",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "minio": "^8.0.7",
+    "oracle": "^0.4.1",
+    "oracledb": "^5.5.0"
+  }
+}
