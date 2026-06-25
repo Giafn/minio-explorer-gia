@@ -28,8 +28,6 @@ const dbConfig = {
   connectString: process.env.ORACLE_CONNECT_STRING
 };
 
-let fileCache = null;
-let cacheTime = 0;
 const CACHE_TTL = parseInt(process.env.CACHE_TTL) || 60000;
 
 app.use((req, res, next) => {
@@ -37,44 +35,75 @@ app.use((req, res, next) => {
   next();
 });
 
+async function getConnection() {
+  return await oracledb.getConnection(dbConfig);
+}
+
+const FILE_QUERY = `(SELECT EVIDENCE_PATH AS PATH, CREATED_BY, DOC_TYPES AS DOC_TYPE, XS1, TO_CHAR(CREATED_DTM, 'YYYY-MM-DD') AS CREATED_DATE FROM DOCUMENT_FILES
+UNION ALL
+SELECT '/FILE' || R_GLOBAL_TYPE_VALUE.NAME || M_ATTACHMENT.FILE_NAME AS PATH, M_ATTACHMENT.CREATED_BY, M_ATTACHMENT.CATEGORY AS DOC_TYPE, NULL AS XS1, TO_CHAR(M_ATTACHMENT.CREATED_DATE, 'YYYY-MM-DD') AS CREATED_DATE
+FROM M_ATTACHMENT JOIN R_GLOBAL_TYPE_VALUE ON M_ATTACHMENT.PATH_FILE = R_GLOBAL_TYPE_VALUE.GLB_VALUE
+UNION ALL
+SELECT PATH, CREATED_BY, 'TEMPLATE' AS DOC_TYPE, NULL AS XS1, TO_CHAR(CREATED_DATE, 'YYYY-MM-DD') AS CREATED_DATE FROM M_GENERAL_TEMPLATE)`;
+
+const FETCH_OPTS = { fetchTypeHandler: (m) => { if (m.dbType === oracledb.DB_TYPE_DATE) return { type: oracledb.STRING }; } };
+
+function mapRow(row) {
+  return { path: row[0], name: row[0].split('/').pop(), createdBy: row[1], docType: row[2], xs1: row[3], createdDate: row[4] };
+}
+
+// Ambil semua file (untuk search)
+let allFileCache = null;
+let allFileCacheTime = 0;
 async function fetchAllFiles() {
   const now = Date.now();
-  if (fileCache && now - cacheTime < CACHE_TTL) return fileCache;
+  if (allFileCache && now - allFileCacheTime < CACHE_TTL) return allFileCache;
+  const conn = await getConnection();
+  const res = await conn.execute(`SELECT * FROM ${FILE_QUERY}`, [], FETCH_OPTS);
+  allFileCache = res.rows.map(mapRow);
+  allFileCacheTime = now;
+  await conn.close();
+  return allFileCache;
+}
 
-  const connection = await oracledb.getConnection(dbConfig);
-  const result = await connection.execute(
-    'SELECT EVIDENCE_PATH, CREATED_BY, DOC_TYPES, XS1, CREATED_DTM as CREATED_DATE FROM DOCUMENT_FILES'
+// Ambil folder saja (untuk sidebar tree) - sangat ringan
+let folderCache = null;
+let folderCacheTime = 0;
+async function fetchFolders() {
+  const now = Date.now();
+  if (folderCache && now - folderCacheTime < CACHE_TTL) return folderCache;
+  const conn = await getConnection();
+  const res = await conn.execute(`SELECT DISTINCT SUBSTR(PATH, 1, INSTR(PATH, '/', 1, LEVEL)) AS FOLDER FROM (${FILE_QUERY}) CONNECT BY PRIOR PATH = SUBSTR(PATH, 1, INSTR(PATH, '/', 1, LEVEL) - 1) START WITH PATH LIKE '%/'`);
+  folderCache = res.rows.map(r => r[0]);
+  folderCacheTime = now;
+  await conn.close();
+  return folderCache;
+}
+
+// Ambil file per folder saja - ringan
+let dirFileCache = {};
+let dirFileCacheTime = {};
+async function fetchFilesByDir(dirPath) {
+  const now = Date.now();
+  const cacheKey = dirPath;
+  if (dirFileCache[cacheKey] && now - dirFileCacheTime[cacheKey] < CACHE_TTL) return dirFileCache[cacheKey];
+  const conn = await getConnection();
+  const prefix = dirPath === '/' ? '/' : dirPath + '/';
+  const res = await conn.execute(
+    `SELECT * FROM ${FILE_QUERY} WHERE PATH LIKE :p1 OR PATH LIKE :p2`,
+    [prefix + '%', dirPath === '/' ? '%/' : dirPath],
+    FETCH_OPTS
   );
-  const docFiles = result.rows.map(row => ({
-    path: row[0],
-    name: row[0].split('/').pop(),
-    createdBy: row[1],
-    docType: row[2],
-    xs1: row[3],
-    createdDate: row[4] ? new Date(row[4]).toISOString().slice(0, 10) : null
-  }));
-
-  const attResult = await connection.execute(
-    `SELECT '/FILE' || R_GLOBAL_TYPE_VALUE.NAME || M_ATTACHMENT.FILE_NAME AS PATH,
-            M_ATTACHMENT.CATEGORY,
-            M_ATTACHMENT.CREATED_BY,
-            TO_CHAR(M_ATTACHMENT.CREATED_DATE, 'YYYY-MM-DD') AS CREATED_DATE
-     FROM M_ATTACHMENT
-     JOIN R_GLOBAL_TYPE_VALUE ON M_ATTACHMENT.PATH_FILE = R_GLOBAL_TYPE_VALUE.GLB_VALUE`
-  );
-  const attFiles = attResult.rows.map(row => ({
-    path: row[0],
-    name: row[0].split('/').pop(),
-    createdBy: row[2],
-    docType: row[1],
-    xs1: null,
-    createdDate: row[3]
-  }));
-
-  await connection.close();
-  fileCache = [...docFiles, ...attFiles];
-  cacheTime = now;
-  return fileCache;
+  const files = res.rows.map(mapRow).filter(f => {
+    const rel = f.path.replace(/^\/+/, '');
+    const dirOnly = dirPath === '/' ? '' : dirPath.replace(/^\/+/, '') + '/';
+    const relNoDir = rel.replace(dirOnly, '');
+    return !relNoDir.includes('/') || (dirPath === '/' && !rel.includes('/'));
+  });
+  dirFileCache[cacheKey] = files;
+  dirFileCacheTime[cacheKey] = now;
+  await conn.close();
+  return files;
 }
 
 function buildTree(files) {
@@ -109,17 +138,18 @@ function getNode(tree, dirPath) {
 
 // API: force refresh cache
 app.get('/api/refresh', async (req, res) => {
-  fileCache = null;
-  cacheTime = 0;
+  allFileCache = null; allFileCacheTime = 0;
+  folderCache = null; folderCacheTime = 0;
+  dirFileCache = {}; dirFileCacheTime = {};
   try {
     await fetchAllFiles();
-    res.json({ ok: true, count: fileCache.length });
+    res.json({ ok: true, count: allFileCache.length });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// API: get directory listing for a path
+// API: get directory listing for a path (hanya file di folder ini)
 app.get('/api/list', async (req, res) => {
   const dirPath = req.query.path || '/';
   try {
@@ -135,13 +165,8 @@ app.get('/api/list', async (req, res) => {
     }));
 
     const fileItems = node.files.map(f => ({
-      name: f.name,
-      path: f.path,
-      type: 'file',
-      docType: f.docType,
-      createdBy: f.createdBy,
-      createdDate: f.createdDate,
-      xs1: f.xs1
+      name: f.name, path: f.path, type: 'file', docType: f.docType,
+      createdBy: f.createdBy, createdDate: f.createdDate, xs1: f.xs1
     }));
 
     res.json({ path: dirPath, directories: dirs, files: fileItems });
@@ -168,7 +193,8 @@ app.delete('/api/delete', async (req, res) => {
   if (!filePath) return res.status(400).json({ error: 'Path required' });
   try {
     await minioClient.removeObject(BUCKET, filePath);
-    fileCache = null;
+    allFileCache = null; allFileCacheTime = 0;
+    dirFileCache = {}; dirFileCacheTime = {};
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
