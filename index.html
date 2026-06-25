@@ -347,17 +347,24 @@
 
         document.getElementById('searchInput').addEventListener('keyup', async (e) => {
             if (e.key === 'Enter') {
-                const query = e.target.value.toLowerCase();
+                const query = e.target.value.toLowerCase().trim();
                 if (!query) { navigateTo(currentPath); return; }
                 try {
-                    const res = await fetch('/api/list?path=/');
-                    const data = await res.json();
-                    const allFiles = data.files || [];
-                    const matched = allFiles.filter(f => f.name.toLowerCase().includes(query) || f.path.toLowerCase().includes(query));
-                    document.getElementById('fileList').innerHTML = '';
+                    const res = await fetch('/api/tree');
+                    const tree = await res.json();
+                    const matched = [];
+                    function collectFiles(node) {
+                        (node.files || []).forEach(f => {
+                            if (f.name.toLowerCase().includes(query) || f.path.toLowerCase().includes(query)) matched.push(f);
+                        });
+                        Object.values(node.children || {}).forEach(collectFiles);
+                    }
+                    collectFiles(tree);
                     const searchData = { path: 'Search: ' + query, directories: [], files: matched };
+                    document.getElementById('fileList').innerHTML = '';
                     renderFiles(searchData);
                     updateStatus(searchData);
+                    document.getElementById('breadcrumb').innerHTML = `<span class="breadcrumb-item">🔍 Search: ${query} (${matched.length} results)</span>`;
                 } catch (e) {}
             }
         });
